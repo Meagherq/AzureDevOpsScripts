@@ -1,10 +1,11 @@
 ﻿#Variables
 $targetOrganization="https://dev.azure.com//"
+$organizationName=""
 $targetPersonalAccessToken=""
-$patUser = ""
-
-# Navigate to URL below. Code in query parameter is used to generate access token.
-# https://login.microsoftonline.com/e5ff440d-0854-4245-bcba-baa4251ffcdd/oauth2/v2.0/authorize?client_id=48aff9ec-7d2d-4189-8f21-80f110dad523&response_type=code&redirect_uri=http://localhost:8080/&response_mode=query&scope=https://app.vssps.visualstudio.com/user_impersonation openid profile&state=12345&code_challenge=_beisJXfa3noWpMVAzp0Z1C3YdXCh3Mlm-rAzb37DQk&code_challenge_method=S256
+$targetPatUser = ""
+$sourcePersonalAccessToken=""
+$sourcePatUser = ""
+$templateId = ""
 
 # Parse Excel Values from Disconnected Organizations - TODO: Acquire PATS for source projects; Put into Excel
 $CSVOrganizations = Import-Csv -Path ./organizations.csv
@@ -13,54 +14,110 @@ $CSVOrganizations = Import-Csv -Path ./organizations.csv
 # Create directory for Source DevOps Organization
 foreach ($row in $CSVOrganizations)
 {
-    
-    #$body = @{
-    #  grant_type='authorization_code'
-    #  client_id='48aff9ec-7d2d-4189-8f21-80f110dad523'
-    #  scope='https://app.vssps.visualstudio.com/user_impersonation openid profile'
-    #  # Add the authorization code from the query returned from line 6.
-    #  code=''
-    #  redirect_uri='http://localhost:8080/'
-    #  code_verifier='eM98h8_0hdRg9vdu0aBpj6uhfDB2vcNKtnWergcfS9k'
-    #}
-    #$contentType = 'application/x-www-form-urlencoded'
-
-    # Acquire OAuth token for Azure DevOps
-    #$tokenResponse = Invoke-WebRequest -Uri https://login.microsoftonline.com/e5ff440d-0854-4245-bcba-baa4251ffcdd/oauth2/v2.0/token -Method Post -Body $body -ContentType $contentType -Headers @{ Origin='http://localhost'}
-    #$jsonTokenResponse = $tokenResponse.Content | ConvertFrom-Json
-
     $name = $row.Name
-    $personalAccessToken = $row.PersonalAccessToken
     $Url = $row.Url
     
-    $unencodedBasicAuthString = $patUser + ":" + $personalAccessToken
-    $b64EncodedPAT = [System.Convert]::ToBase64String([System.Text.Encoding]::Unicode.GetBytes($unencodedBasicAuthString))
-
+    $b64EncodedPATTarget = [System.Convert]::ToBase64String([System.Text.Encoding]::UTF8.GetBytes($targetPatUser + ":" + $targetPersonalAccessToken))
+    $b64EncodedPATSource = [System.Convert]::ToBase64String([System.Text.Encoding]::UTF8.GetBytes($sourcePatUser + ":" + $sourcePersonalAccessToken))
+    Write-Output $b64EncodedPATTarget
+    Write-Output $b64EncodedPATSource
+    
     # Query for projects within an Organization
-    #$projects = Invoke-WebRequest -Uri https://dev.azure.com/$name/_apis/projects?api-version=7.0 -Method Get -ContentType "application-json" -Headers @{"Authorization"="Bearer $jsonTokenResponse.access_token"}
-    #$projects = Invoke-WebRequest -Uri https://dev.azure.com/$name/_apis/projects?api-version=7.0  -Method Get -ContentType "application-json" -Headers @{"Authorization"="Basic "}
-    $projects = Invoke-WebRequest -Uri https://dev.azure.com/$name/_apis/projects?api-version=7.0  -Method Get -ContentType "application-json" -Headers @{"Authorization"="Basic $b64EncodedPAT"}
-
+    $projects = Invoke-WebRequest -Uri https://dev.azure.com/$name/_apis/projects?api-version=7.0  -Method Get -ContentType "application-json" -Headers @{"Authorization"="Basic $b64EncodedPATSource"}
     $organizationDirectory = New-Item -ItemType Directory -Force -Path ./$name
 
-    # INNER LOOP For-Each list of Project in an Organization #
+    # For-Each list of Project in an Organization #
     # Create directory for each Project
     ($projects.Content | ConvertFrom-Json).value | ForEach-Object {
 
-         # Get Current Process to 
-         #$projectProcess = Invoke-WebRequest -Uri https://dev.azure.com/$row."Url"/_apis/work/processes/{processTypeId}?api-version=7.0 -Method Get -Headers @{"Authorization"="Bearer $token"}
+         $sourceProjectName = $_.name
+
+         Write-Output $sourceProjectName
+
+         # Check if project exists in the target directory
+         $existingProject = @{}
+         try {
+            $existingProject = Invoke-WebRequest -Uri https://dev.azure.com/MigrationDestinationQRM/_apis/projects/"$sourceProjectName"?api-version=7.0  -Method Get -ContentType "application/json" -Headers @{"Authorization"="Basic $b64EncodedPATTarget"}
+         }
+         catch { 
          
-         # Check for ReflectionWorkItemId on Current Process
-         #$projectProcess = Invoke-WebRequest -Uri https://dev.azure.com/$row."Url"/_apis/work/processes/$projectProcess.id/workItemTypes/{witRefName}/fields/{fieldRefName}?api-version=7.0 -Method Get -Headers @{"Authorization"="Bearer $token"}
+            if (($_[0] | ConvertFrom-Json).typeName -eq "Microsoft.TeamFoundation.Core.WebApi.ProjectDoesNotExistWithNameException, Microsoft.TeamFoundation.Core.WebApi") 
+            {
+
+                $projectParameters = @{
+                    name             = $sourceProjectName
+                    description      = 'Test'
+                    capabilities     = @{
+                        processTemplate        = @{
+                            templateTypeId     = $templateId
+                        }
+                    }
+                }
+            #Create Project in Destination Organization
+            $existingProject = Invoke-WebRequest -Uri https://dev.azure.com/MigrationDestinationQRM/_apis/projects/"$sourceProjectName"?api-version=7.0  -Method Post -Body ($projectParameters | ConvertTo-Json) -ContentType "application/json" -Headers @{"Authorization"="Basic $b64EncodedPATTarget"}
+            }
+         }
+
+        # Migrate Repos from Source
+        $sourceRepos = Invoke-WebRequest -Uri https://dev.azure.com/$name/$sourceProjectName/_apis/git/repositories?api-version=7.1-preview.1  -Method Get -ContentType "application/json" -Headers @{"Authorization"="Basic $b64EncodedPATSource"}
+        ($sourceRepos.Content | ConvertFrom-Json).value | ForEach-Object { 
+
+            $sourceRepo = $_
+            #Check if repo existing in target project
+            $sourceRepositoryId = $_.id
+            $existingRepo = @{}
+            try {
+                $existingRepo = Invoke-WebRequest -Uri https://dev.azure.com/MigrationDestinationQRM/$sourceProjectName/_apis/git/repositories/"$sourceRepositoryId"?api-version=7.1-preview.1  -Method Get -ContentType "application/json" -Headers @{"Authorization"="Basic $b64EncodedPATTarget"}
+                Write-Output $existingRepo
+                break
+            }
+            catch {
+                if (($_[0] | ConvertFrom-Json).typeName -eq "Microsoft.TeamFoundation.Git.Server.GitRepositoryNotFoundException, Microsoft.TeamFoundation.Git.Server") 
+                {
+                    
+                    $existingProject = $existingProject.Content | ConvertFrom-Json
+
+                    Write-Output $existingProject
+                    $newRepoParameters = @{
+                        name        = $sourceRepo.name
+                        project     = @{
+                            id        = $existingProject.id
+                        }
+                    }
+
+                    $newRepo = Invoke-WebRequest -Uri https://dev.azure.com/MigrationDestinationQRM/$sourceProjectName/_apis/git/repositories?api-version=7.0  -Method Post -ContentType "application/json" -Body ($newRepoParameters | ConvertTo-Json) -Headers @{"Authorization"="Basic $b64EncodedPATTarget"}
+                    
+                    $newRepo = $newRepo.Content | ConvertFrom-Json
+
+                    #Will need to source templateId manually.
+                    $repoImportParameters = @{
+
+                        parameters     = @{
+
+                            deleteServiceEndpointAfterImportIsDone = false
+                            gitSource        = @{
+                                url     = $sourceRepo.remoteUrl
+                            }
+                            tfvcSource                             = "test"
+                            serviceEndpointId                      = "test"
+                        }
+
+                    }
+
+                    $newRepoId = $newRepo.id
+
+                    #Hitting 400 Bad Request with no message
+                    $newImportedRepo = Invoke-WebRequest -Uri https://dev.azure.com/MigrationDestinationQRM/$sourceProjectName/_apis/git/repositories/$newRepoId/importRequests?api-version=7.0  -Method Post -Body ($repoImportParameters | ConvertTo-Json) -ContentType "application/json" -Headers @{"Authorization"="Basic $b64EncodedPATTarget"}
+                }
+            }
+        }
+         break
          
-         # Import Azure DevOps Repos into Target
-         # Query for Repos to ensure once-only migration
          Set-Location -Path ./$name
-         New-Item -ItemType Directory -Force -Path $_.name
-         # Create new migration configuration in Project directory
-         # Skip if already created
+         New-Item -ItemType Directory -Force -Path $sourceProjectName
+
          # Navigate to Project specific path 
-         Set-Location -Path $_.name
+         Set-Location -Path $sourceProjectName
 
          # Get JSON content from migration configuration
          Copy-Item "../../configuration4.json" -Destination .
@@ -70,13 +127,13 @@ foreach ($row in $CSVOrganizations)
          # Prepare as much as possible
          # Update Source for WorkItems
          $configurationJson.Source.Collection = $Url
-         $configurationJson.Source.Project = $_.name
+         $configurationJson.Source.Project = $sourceProjectName
          $configurationJson.Source.AuthenticationMode = "AccessToken"
          $configurationJson.Source.PersonalAccessToken = $personalAccessToken
 
          # Update Destination for WorkItems
          $configurationJson.Target.Collection = $targetOrganization
-         $configurationJson.Target.Project = $_.Name
+         $configurationJson.Target.Project = $sourceProjectName
          $configurationJson.Target.AuthenticationMode = "AccessToken"
          $configurationJson.Target.PersonalAccessToken = $targetPersonalAccessToken
 
@@ -89,7 +146,7 @@ foreach ($row in $CSVOrganizations)
                 $_.AccessToken = $personalAccessToken
                 $_.Query.Parameters.TeamProject = $currentProject.name
                 $_.Organisation = $Name
-                $_.Project = $_.name
+                $_.Project = $sourceProjectName
             }
             if ($_.Name -eq "Target") {
                 $_.AccessToken = $targetPersonalAccessToken
