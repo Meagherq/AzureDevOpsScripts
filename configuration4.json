@@ -114,7 +114,7 @@
     }
   ],
   "GitRepoMapping": null,
-  "LogLevel": "Information",
+  "LogLevel": "Verbose",
   "CommonEnrichersConfig": null,
   "Processors": [
     {

@@ -5,7 +5,6 @@ $targetPersonalAccessToken=""
 $targetPatUser = ""
 $sourcePersonalAccessToken=""
 $sourcePatUser = ""
-$templateId = ""
 
 # Parse Excel Values from Disconnected Organizations - TODO: Acquire PATS for source projects; Put into Excel
 $CSVOrganizations = Import-Csv -Path ./organizations.csv
@@ -16,11 +15,11 @@ foreach ($row in $CSVOrganizations)
 {
     $name = $row.Name
     $Url = $row.Url
+
+    $templateId = ""
     
     $b64EncodedPATTarget = [System.Convert]::ToBase64String([System.Text.Encoding]::UTF8.GetBytes($targetPatUser + ":" + $targetPersonalAccessToken))
     $b64EncodedPATSource = [System.Convert]::ToBase64String([System.Text.Encoding]::UTF8.GetBytes($sourcePatUser + ":" + $sourcePersonalAccessToken))
-    Write-Output $b64EncodedPATTarget
-    Write-Output $b64EncodedPATSource
     
     # Query for projects within an Organization
     $projects = Invoke-WebRequest -Uri https://dev.azure.com/$name/_apis/projects?api-version=7.0  -Method Get -ContentType "application-json" -Headers @{"Authorization"="Basic $b64EncodedPATSource"}
@@ -29,92 +28,245 @@ foreach ($row in $CSVOrganizations)
     # For-Each list of Project in an Organization #
     # Create directory for each Project
     ($projects.Content | ConvertFrom-Json).value | ForEach-Object {
-
          $sourceProjectName = $_.name
-
-         Write-Output $sourceProjectName
+         $sourceProjectId = $_.id
+         $sourceProjectDescription = $_.description
 
          # Check if project exists in the target directory
          $existingProject = @{}
+         $existingProjectId = ""
          try {
-            $existingProject = Invoke-WebRequest -Uri https://dev.azure.com/MigrationDestinationQRM/_apis/projects/"$sourceProjectName"?api-version=7.0  -Method Get -ContentType "application/json" -Headers @{"Authorization"="Basic $b64EncodedPATTarget"}
+            $existingProject = Invoke-WebRequest -Uri https://dev.azure.com/$organizationName/_apis/projects/"$sourceProjectName"?api-version=7.0  -Method Get -ContentType "application/json" -Headers @{"Authorization"="Basic $b64EncodedPATTarget"}
          }
          catch { 
          
             if (($_[0] | ConvertFrom-Json).typeName -eq "Microsoft.TeamFoundation.Core.WebApi.ProjectDoesNotExistWithNameException, Microsoft.TeamFoundation.Core.WebApi") 
             {
 
+                $sourceProcess = Invoke-WebRequest -Uri "https://dev.azure.com/$name/_apis/projects/$sourceProjectId/properties?keys=System.Process Template&api-version=7.0-preview.1"  -Method Get -ContentType "application/json" -Headers @{"Authorization"="Basic $b64EncodedPATSource"}
+                
+                $listTargetProcesses = Invoke-WebRequest -Uri "https://dev.azure.com/$organizationName/_apis/process/processes?api-version=7.0"  -Method Get -ContentType "application/json" -Headers @{"Authorization"="Basic $b64EncodedPATTarget"}
+
+                foreach ($process in ($listTargetProcesses.Content | ConvertFrom-Json).value) {
+                    $sourceProcessName = ($sourceProcess.Content | ConvertFrom-Json).value[0].value
+                    $migrationProcessName = $sourceProcessName + "Migration"
+                    if ($migrationProcessName -eq $process.name) {
+                       $templateId = $process.id
+                    }
+                }
+
                 $projectParameters = @{
                     name             = $sourceProjectName
-                    description      = 'Test'
+                    description      = $sourceProjectDescription
+                    visibility       = "private"
                     capabilities     = @{
+                        versioncontrol = @{
+                          sourceControlType= "Git"
+                        }
                         processTemplate        = @{
                             templateTypeId     = $templateId
                         }
                     }
                 }
+
             #Create Project in Destination Organization
-            $existingProject = Invoke-WebRequest -Uri https://dev.azure.com/MigrationDestinationQRM/_apis/projects/"$sourceProjectName"?api-version=7.0  -Method Post -Body ($projectParameters | ConvertTo-Json) -ContentType "application/json" -Headers @{"Authorization"="Basic $b64EncodedPATTarget"}
+            $existingProject = Invoke-WebRequest -Uri https://dev.azure.com/$organizationName/_apis/projects/"$sourceProjectName"?api-version=7.0  -Method Post -Body ($projectParameters | ConvertTo-Json -Depth 6) -ContentType "application/json" -Headers @{"Authorization"="Basic $b64EncodedPATTarget"}
             }
          }
+
+         $existingProjectId = ($existingProject.Content | ConvertFrom-Json).id
+         $existingProjectName = ($existingProject.Content | ConvertFrom-Json).name
 
         # Migrate Repos from Source
         $sourceRepos = Invoke-WebRequest -Uri https://dev.azure.com/$name/$sourceProjectName/_apis/git/repositories?api-version=7.1-preview.1  -Method Get -ContentType "application/json" -Headers @{"Authorization"="Basic $b64EncodedPATSource"}
         ($sourceRepos.Content | ConvertFrom-Json).value | ForEach-Object { 
-
             $sourceRepo = $_
             #Check if repo existing in target project
-            $sourceRepositoryId = $_.id
+            $sourceRepositoryName = $_.name
+
+            $Header = @{
+                        Authorization = ("Basic {0}" -f $b64EncodedPATTarget)
+            }
+
+            $EndpointURL = "https://dev.azure.com/$organizationName/$existingProjectId/_apis/serviceendpoint/endpoints"
+            
             $existingRepo = @{}
             try {
-                $existingRepo = Invoke-WebRequest -Uri https://dev.azure.com/MigrationDestinationQRM/$sourceProjectName/_apis/git/repositories/"$sourceRepositoryId"?api-version=7.1-preview.1  -Method Get -ContentType "application/json" -Headers @{"Authorization"="Basic $b64EncodedPATTarget"}
-                Write-Output $existingRepo
-                break
+                $existingRepoUrl = "https://dev.azure.com/$organizationName/$sourceProjectName/_apis/git/repositories/$sourceRepositoryName" + "?api-version=7.1-preview.1"
+                $existingRepo = Invoke-WebRequest -Uri $existingRepoUrl  -Method Get -ContentType "application/json" -Headers @{"Authorization"="Basic $b64EncodedPATTarget"}
+                
+                #Check if Repo is empty
+                try {
+                    $existingRepoContents = Invoke-RestMethod "https://dev.azure.com/$organizationName/$sourceProjectName/_apis/git/repositories/$sourceRepositoryName/items?recursionLevel=Full&api-version=6.0" -Headers $Header
+                }
+                catch {
+                    if ($_.ErrorDetails.Message -like "*Cannot find any branches*" ) {
+                        $encodedRepositoryName = [uri]::EscapeDataString($sourceRepositoryName)
+                        $encodedSourceProjectName = [uri]::EscapeDataString($existingProjectName)
+                        $Endpoint = @{}
+                        $Parameters = @{
+                            Uri         = "https://dev.azure.com/$organizationName/$sourceProjectName/_apis/serviceendpoint/endpoints?endpointNames=GitImport:$sourceProjectName$sourceRepositoryName&api-version=5.1-preview.2"
+                            Method      = "GET"
+                            ContentType = "application/json"
+                            Headers     = $Header
+                        }
+                        try {
+                            $Endpoint = Invoke-RestMethod @Parameters
+
+                            if ($Endpoint.count -eq 0) {
+                              $Body = @{
+                                "name"          = "GitImport:$sourceProjectName$sourceRepositoryName"
+                                "type"          = "git"
+                                "url"           = "https://$name@dev.azure.com/$name/$encodedSourceProjectName/_git/$encodedRepositoryName"
+                                "authorization" = @{
+                                    "parameters" = @{
+                                        "username" = "$sourcePatUser"
+                                        "password" = "$sourcePersonalAccessToken"
+                                    }
+                                    "scheme"     = "UsernamePassword"
+                                }
+                              }
+                                $Parameters = @{
+                                    Uri         = $EndpointURL
+                                    Method      = "POST"
+                                    ContentType = "application/json"
+                                    Headers     = $Header
+                                    Body        = $Body
+                                }
+                                
+                                Try {
+                                    $Endpoint = Invoke-RestMethod -Uri "https://dev.azure.com/$organizationName/$encodedSourceProjectName/_apis/serviceendpoint/endpoints?api-version=5.0-preview.2" -ContentType "application/json" -Body ($Body | ConvertTo-Json -Depth 6) -Headers $Header -Method Post
+                                    $EndpointId = $Endpoint.id
+
+                                }
+                                Catch {
+                                    Write-Output "Could not create Endpoint: $_"
+                                }
+                            } else {
+                                $EndpointId = $Endpoint.value[0].id
+                            }
+                        }
+                        catch {
+                            Write-Output "Error:$_"
+                        }
+
+                        $Body = @{
+                        "parameters" = @{
+                            "deleteServiceEndpointAfterImportIsDone" = $true
+                            "gitSource"                              = @{
+                                "url"       = "https://$name@dev.azure.com/$name/$encodedSourceProjectName/_git/$encodedRepositoryName"
+                                "overwrite" = $false
+                        }
+                            "tfvcSource"                             = $null
+                            "serviceEndpointId"                      = $EndpointId
+                        }
+                       }
+                       $Parameters = @{
+                            uri         = "https://dev.azure.com/$organizationName/$encodedSourceProjectName/_apis/git/repositories/$encodedRepositoryName/importRequests"
+                            Method      = 'POST'
+                            ContentType = "application/json"
+                            Headers     = $Header
+                            Body        = $Body
+                        }
+
+                        Try {
+                            Invoke-RestMethod -Uri "https://dev.azure.com/$organizationName/$existingProjectId/_apis/git/repositories/$encodedRepositoryName/importRequests?api-version=5.0-preview.1" -Method Post -Body ($Body | ConvertTo-Json -Depth 5) -ContentType "application/json" -Headers $Header
+                        }
+                        Catch {
+                            Write-Output "Could not import Repo $encodedRepositoryName : $_"
+                        }
+                    }
+                }
+                
             }
             catch {
                 if (($_[0] | ConvertFrom-Json).typeName -eq "Microsoft.TeamFoundation.Git.Server.GitRepositoryNotFoundException, Microsoft.TeamFoundation.Git.Server") 
                 {
-                    
-                    $existingProject = $existingProject.Content | ConvertFrom-Json
-
-                    Write-Output $existingProject
+                    $encodedSourceProjectName = [uri]::EscapeDataString($sourceProjectName)
+                    $encodedRepositoryName = [uri]::EscapeDataString($sourceRepositoryName)
                     $newRepoParameters = @{
                         name        = $sourceRepo.name
-                        project     = @{
-                            id        = $existingProject.id
-                        }
                     }
-
-                    $newRepo = Invoke-WebRequest -Uri https://dev.azure.com/MigrationDestinationQRM/$sourceProjectName/_apis/git/repositories?api-version=7.0  -Method Post -ContentType "application/json" -Body ($newRepoParameters | ConvertTo-Json) -Headers @{"Authorization"="Basic $b64EncodedPATTarget"}
+                    $newRepo = Invoke-WebRequest -Uri "https://dev.azure.com/$organizationName/$encodedSourceProjectName/_apis/git/repositories?api-version=7.0" -Method Post -ContentType "application/json" -Body ($newRepoParameters | ConvertTo-Json) -Headers @{"Authorization"="Basic $b64EncodedPATTarget"}
                     
                     $newRepo = $newRepo.Content | ConvertFrom-Json
 
-                    #Will need to source templateId manually.
-                    $repoImportParameters = @{
+                    $Endpoint = @{}
+                    $EndpointId = ""
+                    $Parameters = @{
+                        Uri         = "https://dev.azure.com/$organizationName/$encodedSourceProjectName/_apis/serviceendpoint/endpoints?endpointNames=GitImport:$sourceProjectName$sourceRepositoryName&api-version=5.1-preview.2"
+                        Method      = "GET"
+                        ContentType = "application/json"
+                        Headers     = $Header
+                    }
+                    try {
+                        $Endpoint = Invoke-RestMethod @Parameters
 
-                        parameters     = @{
-
-                            deleteServiceEndpointAfterImportIsDone = false
-                            gitSource        = @{
-                                url     = $sourceRepo.remoteUrl
+                        if ($Endpoint.count -eq 0) {
+                         $Body = @{
+                            "name"          = "GitImport:$sourceProjectName$sourceRepositoryName"
+                            "type"          = "git"
+                            "url"           = "https://$name@dev.azure.com/$name/$encodedSourceProjectName/_git/$encodedRepositoryName"
+                            "authorization" = @{
+                                "parameters" = @{
+                                    "username" = "$sourcePatUser"
+                                    "password" = "$sourcePersonalAccessToken"
+                                }
+                                "scheme"     = "UsernamePassword"
                             }
-                            tfvcSource                             = "test"
-                            serviceEndpointId                      = "test"
+                          }
+                            $Parameters = @{
+                                Uri         = $EndpointURL
+                                Method      = "POST"
+                                ContentType = "application/json"
+                                Headers     = $Header
+                                Body        = ([System.Text.Encoding]::UTF8.GetBytes(( $Body | ConvertTo-Json )))
+                            }
+                            Try {
+                                $Endpoint = Invoke-RestMethod -Uri "https://dev.azure.com/$organizationName/$encodedSourceProjectName/_apis/serviceendpoint/endpoints?api-version=5.0-preview.2" -ContentType "application/json" -Body ($Body | ConvertTo-Json -Depth 6) -Headers $Header -Method Post
+                                $EndpointId = $Endpoint.id
+                            }
+                            Catch {
+                                Write-Output "Could not create Endpoint: $_"
+                            }
+                        } else {
+                          $EndpointId = $Endpoint.value[0].id
                         }
-
+                    }
+                    catch {
+                            Write-Output "Error:$_"
+                    }
+                    
+                    $Body = @{
+                    "parameters" = @{
+                        "deleteServiceEndpointAfterImportIsDone" = $true
+                        "gitSource"                              = @{
+                            "url"       = "https://$name@dev.azure.com/$name/$encodedSourceProjectName/_git/$encodedRepositoryName"
+                            "overwrite" = $false
+                        }
+                        "tfvcSource"                             = $null
+                        "serviceEndpointId"                      = $EndpointId
+                    }
+                   }
+                   $Parameters = @{
+                        uri         = "https://dev.azure.com/$organizationName/$encodedSourceProjectName/_apis/git/repositories/$encodedRepositoryName/importRequests"
+                        Method      = 'POST'
+                        ContentType = "application/json"
+                        Headers     = $Header
+                        Body        = $Body
                     }
 
-                    $newRepoId = $newRepo.id
-
-                    #Hitting 400 Bad Request with no message
-                    $newImportedRepo = Invoke-WebRequest -Uri https://dev.azure.com/MigrationDestinationQRM/$sourceProjectName/_apis/git/repositories/$newRepoId/importRequests?api-version=7.0  -Method Post -Body ($repoImportParameters | ConvertTo-Json) -ContentType "application/json" -Headers @{"Authorization"="Basic $b64EncodedPATTarget"}
+                    Try {
+                        Invoke-RestMethod -Uri "https://dev.azure.com/$organizationName/$existingProjectId/_apis/git/repositories/$encodedRepositoryName/importRequests?api-version=5.0-preview.1" -Method Post -Body ($Body | ConvertTo-Json -Depth 5) -ContentType "application/json" -Headers $Header
+                    }
+                    Catch {
+                        Write-Output "Could not import Repo $encodedRepositoryName : $_"
+                    }
                 }
             }
         }
-         break
-         
          Set-Location -Path ./$name
-         New-Item -ItemType Directory -Force -Path $sourceProjectName
+         $directoryFolder = New-Item -ItemType Directory -Force -Path $sourceProjectName
 
          # Navigate to Project specific path 
          Set-Location -Path $sourceProjectName
@@ -129,7 +281,7 @@ foreach ($row in $CSVOrganizations)
          $configurationJson.Source.Collection = $Url
          $configurationJson.Source.Project = $sourceProjectName
          $configurationJson.Source.AuthenticationMode = "AccessToken"
-         $configurationJson.Source.PersonalAccessToken = $personalAccessToken
+         $configurationJson.Source.PersonalAccessToken = $sourcePersonalAccessToken
 
          # Update Destination for WorkItems
          $configurationJson.Target.Collection = $targetOrganization
@@ -143,31 +295,27 @@ foreach ($row in $CSVOrganizations)
          $configurationJson.Endpoints.AzureDevOpsEndpoints | ForEach-Object {
             
             if ($_.Name -eq "Source") {
-                $_.AccessToken = $personalAccessToken
+                $_.AccessToken = $sourcePersonalAccessToken
                 $_.Query.Parameters.TeamProject = $currentProject.name
-                $_.Organisation = $Name
+                $_.Organisation = "https://dev.azure.com/$name/"
                 $_.Project = $sourceProjectName
             }
             if ($_.Name -eq "Target") {
                 $_.AccessToken = $targetPersonalAccessToken
-                #$_.Query.Parameters.TeamProject = $row.Name
-                $_.Organisation = $Name
+                $_.Organisation = "https://dev.azure.com/$organizationName/"
                 $_.Project = $currentProject.name
             }
          }
 
-         $configurationJson | ConvertTo-Json -depth 100 | set-content ./configuration4.json
+         ($configurationJson | ConvertTo-Json -depth 100).Replace("\u0027", "'").Replace("\u003c", "<").Replace("\u003e", ">") | set-content ./configuration4.json -Encoding UTF8
 
          # Execute Migration
          try {
-             C:\tools\MigrationTools\migration.exe execute --config ./configuration4.json > ./output.txt
+             Write-Output "Executing Migration for $sourceProjectName"
+             C:\tools\MigrationTools\migration.exe execute --config ./configuration4.json | Out-File -FilePath ./output.txt -Append
          }
          catch {
-             #Log Errors with Execution
-
-             Write-Output $Error
-             #Write-Output $Error[0].Message
-             $Error[0].Message > ./error.txt
+             $Error[0].Message | Out-File -FilePath ./output.txt -Append
          }
          finally {
             #Reset to top level CWD
