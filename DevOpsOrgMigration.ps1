@@ -314,8 +314,7 @@ foreach ($row in $CSVOrganizations)
          # Execute Migration
          try {
              Write-Output "Executing Migration for $sourceProjectName"
-             #C:\tools\MigrationTools\migration.exe execute --config ./configuration4.json | Out-File -FilePath ./output.txt -Append
-             C:\Users\quinnmeagher\Downloads\MigrationTools-13.0.3\migration.exe execute --config ./organizationMigrationConfiguration.json | Out-File -FilePath ./output.txt -Append
+             C:\tools\MigrationTools\migration.exe execute --config ./organizationMigrationConfiguration.json | Out-File -FilePath ./output.txt -Append
          }
          catch {
              $Error[0].Message | Out-File -FilePath ./output.txt -Append
