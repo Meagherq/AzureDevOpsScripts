@@ -1,5 +1,5 @@
 ﻿#Variables
-$targetOrganization="https://dev.azure.com//"
+$targetOrganization=""
 $organizationName=""
 $targetPersonalAccessToken=""
 $targetPatUser = ""
@@ -70,12 +70,14 @@ foreach ($row in $CSVOrganizations)
                 }
 
             #Create Project in Destination Organization
-            $existingProject = Invoke-WebRequest -Uri https://dev.azure.com/$organizationName/_apis/projects/"$sourceProjectName"?api-version=7.0  -Method Post -Body ($projectParameters | ConvertTo-Json -Depth 6) -ContentType "application/json" -Headers @{"Authorization"="Basic $b64EncodedPATTarget"}
-            }
+            $existingProjectBaseUrl = "https://dev.azure.com/$organizationName/_apis/projects/$sourceProjectName" + "?api-version=7.0"
+            $existingProject = Invoke-WebRequest -Uri $existingProjectBaseUrl -Method Post -Body ($projectParameters | ConvertTo-Json -Depth 6) -ContentType "application/json" -Headers @{"Authorization"="Basic $b64EncodedPATTarget"}
+            Start-Sleep -Seconds 5
+            $existingProject = Invoke-WebRequest -Uri $existingProjectBaseUrl  -Method Get -ContentType "application/json" -Headers @{"Authorization"="Basic $b64EncodedPATTarget"}
+        }
          }
 
          $existingProjectId = ($existingProject.Content | ConvertFrom-Json).id
-         $existingProjectName = ($existingProject.Content | ConvertFrom-Json).name
 
         # Migrate Repos from Source
         $sourceRepos = Invoke-WebRequest -Uri https://dev.azure.com/$name/$sourceProjectName/_apis/git/repositories?api-version=7.1-preview.1  -Method Get -ContentType "application/json" -Headers @{"Authorization"="Basic $b64EncodedPATSource"}
@@ -102,7 +104,7 @@ foreach ($row in $CSVOrganizations)
                 catch {
                     if ($_.ErrorDetails.Message -like "*Cannot find any branches*" ) {
                         $encodedRepositoryName = [uri]::EscapeDataString($sourceRepositoryName)
-                        $encodedSourceProjectName = [uri]::EscapeDataString($existingProjectName)
+                        $encodedSourceProjectName = [uri]::EscapeDataString($sourceProjectName)
                         $Endpoint = @{}
                         $Parameters = @{
                             Uri         = "https://dev.azure.com/$organizationName/$sourceProjectName/_apis/serviceendpoint/endpoints?endpointNames=GitImport:$sourceProjectName$sourceRepositoryName&api-version=5.1-preview.2"
@@ -272,8 +274,8 @@ foreach ($row in $CSVOrganizations)
          Set-Location -Path $sourceProjectName
 
          # Get JSON content from migration configuration
-         Copy-Item "../../configuration4.json" -Destination .
-         $configurationJson = Get-Content -Path "./configuration4.json" | ConvertFrom-Json
+         Copy-Item "../../organizationMigrationConfiguration.json" -Destination .
+         $configurationJson = Get-Content -Path "./organizationMigrationConfiguration.json" | ConvertFrom-Json
             
          # Script out Organization/Project/PAT details in Source and Destination config objects
          # Prepare as much as possible
@@ -307,12 +309,13 @@ foreach ($row in $CSVOrganizations)
             }
          }
 
-         ($configurationJson | ConvertTo-Json -depth 100).Replace("\u0027", "'").Replace("\u003c", "<").Replace("\u003e", ">") | set-content ./configuration4.json -Encoding UTF8
+         ($configurationJson | ConvertTo-Json -depth 100).Replace("\u0027", "'").Replace("\u003c", "<").Replace("\u003e", ">") | set-content ./organizationMigrationConfiguration.json -Encoding UTF8
 
          # Execute Migration
          try {
              Write-Output "Executing Migration for $sourceProjectName"
-             C:\tools\MigrationTools\migration.exe execute --config ./configuration4.json | Out-File -FilePath ./output.txt -Append
+             #C:\tools\MigrationTools\migration.exe execute --config ./configuration4.json | Out-File -FilePath ./output.txt -Append
+             C:\Users\quinnmeagher\Downloads\MigrationTools-13.0.3\migration.exe execute --config ./organizationMigrationConfiguration.json | Out-File -FilePath ./output.txt -Append
          }
          catch {
              $Error[0].Message | Out-File -FilePath ./output.txt -Append
