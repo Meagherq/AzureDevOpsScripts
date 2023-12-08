@@ -163,7 +163,7 @@
       "RefName": null,
       "SourceName": "Source",
       "TargetName": "Target",
-      "RepositoryNameMaps": { "Source": "Target"}
+      "RepositoryNameMaps": {}
     }
   ],
   "Version": "13.0",
