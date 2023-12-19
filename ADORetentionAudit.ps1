@@ -12,31 +12,43 @@ $projects = Invoke-WebRequest -Uri "https://dev.azure.com/$organization/_apis/pr
 
     try {
         $buildPipelineRetention = Invoke-WebRequest -Uri "https://dev.azure.com/$organization/$projectName/_apis/build/retention?api-version=7.0"  -Method Get -ContentType "application/json" -Headers @{"Authorization"="Basic $B64Pat"}
+        $testRetention = Invoke-WebRequest -Uri "https://dev.azure.com/$organization/$projectName/_apis/test/resultretentionsettings?api-version=7.0"  -Method Get -ContentType "application/json" -Headers @{"Authorization"="Basic $B64Pat"}
         
-        $formattedOutput = ($buildPipelineRetention.Content | ConvertFrom-Json)
+        $formattedPipelineRetention = ($buildPipelineRetention.Content | ConvertFrom-Json)
+        $formattedOutputTestRetention = ($testRetention.Content | ConvertFrom-Json)
 
         $formattedResponse = @"
         ------------|Project Name: $projectName|------------------
 
         Artifact Retention
         ------------------
-        Minimum Allowed Days: $($formattedOutput.purgeArtifacts.min)
-        Maximum Allowed Days: $($formattedOutput.purgeArtifacts.max)
-        Current Value: $($formattedOutput.purgeArtifacts.value)
+        Minimum Allowed Days: $($formattedPipelineRetention.purgeArtifacts.min)
+        Maximum Allowed Days: $($formattedPipelineRetention.purgeArtifacts.max)
+        Current Value: $($formattedPipelineRetention.purgeArtifacts.value)
 
         Pull Request Retention
         ------------------
-        Minimum Allowed Days: $($formattedOutput.purgePullRequestRuns.min)
-        Maximum Allowed Days: $($formattedOutput.purgePullRequestRuns.max)
-        Current Value: $($formattedOutput.purgePullRequestRuns.value)
+        Minimum Allowed Days: $($formattedPipelineRetention.purgePullRequestRuns.min)
+        Maximum Allowed Days: $($formattedPipelineRetention.purgePullRequestRuns.max)
+        Current Value: $($formattedPipelineRetention.purgePullRequestRuns.value)
 
         Pipeline Run Retention
-        Minimum Allowed Days: $($formattedOutput.purgeRuns.min)
-        Maximum Allowed Days: $($formattedOutput.purgeRuns.max)
-        Current Value: $($formattedOutput.purgeRuns.value)
+        ------------------
+        Minimum Allowed Days: $($formattedPipelineRetention.purgeRuns.min)
+        Maximum Allowed Days: $($formattedPipelineRetention.purgeRuns.max)
+        Current Value: $($formattedPipelineRetention.purgeRuns.value)
+
+        Test Result Retention
+        ------------------
+        Automated Results Retention in Days: $($formattedOutputTestRetention.automatedResultsRetentionDuration)
+        Manual Results Retention in Days: $($formattedOutputTestRetention.manualResultsRetentionDuration)
 
 "@
+        Write-Output $formattedResponse
         Write-Output $formattedResponse  | Out-File -FilePath ./output.txt -Append
+
+        #Project Admins
+        #Group Entitlements
     } catch {
         
     }
