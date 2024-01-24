@@ -33,16 +33,16 @@ $subscriptions | ForEach-Object {
                 Write-Output "Excluding Cosmos DB instance $($_.Name) in region $($_.Location)"
                 return
             }
-
+            $IsInScope = $false
             foreach($row in $InScopeCSV) {
                 if ($row.Name -eq $_.Name) {
-                    Write-Output "Including Cosmos DB instance $($_.Name) in region $($_.Location)"
+                    $IsInScope = $true
+                    # Write-Output "Including Cosmos DB instance $($_.Name) in region $($_.Location)"
                     break
                 }
-                else {
-                    Write-Output "Excluding Cosmos DB instance $($_.Name) in region $($_.Location)"
-                    return
-                }
+            }
+            if ($IsInScope -eq $false) {
+                return
             }
 
             $TotalCosmosDBProvisionedThroughtput = 0
@@ -123,23 +123,23 @@ $subscriptions | ForEach-Object {
             for ($i = 0; $i -lt 12; $i++)
             {
                 $iteratedPartitionGrowthIncludingRedundancy = $iteratedPartitionGrowthIncludingRedundancy * $GrowthProjectionMultiplier
-                $physicalParitionGrowthArrayIncludingRedundancy.Add($iteratedPartitionGrowthIncludingRedundancy)
+                $physicalParitionGrowthArrayIncludingRedundancy.Add("$iteratedPartitionGrowthIncludingRedundancy GB")
                 $iteratedPartitionGrowth = $iteratedPartitionGrowth * $GrowthProjectionMultiplier
-                $physicalParitionGrowthArray.Add($iteratedPartitionGrowth)
+                $physicalParitionGrowthArray.Add("$iteratedPartitionGrowth GB")
             }
 
             $requestUnitGrowthArray = [System.Collections.ArrayList]@()
             $requestUnitGrowthArrayIncludingRedundancy = [System.Collections.ArrayList]@()
             $iteratedRUGrowthIncludingRedundancy = ($IndividualCosmosAccountRequestUnits / $NumberOfDays / 24 / 60 / 60) * $NumberOfWriteRegionsIncludingZonalMultiplier
             $iteratedRUGrowth = $IndividualCosmosAccountRequestUnits / $NumberOfDays / 24 / 60 / 60
-            $requestUnitGrowthArrayIncludingRedundancy.Add("$iteratedRUGrowthIncludingRedundancy GB")
-            $requestUnitGrowthArray.Add("$iteratedRUGrowth GB")
+            $requestUnitGrowthArrayIncludingRedundancy.Add("$iteratedRUGrowthIncludingRedundancy")
+            $requestUnitGrowthArray.Add("$iteratedRUGrowth")
             for ($i = 0; $i -lt 12; $i++)
             {
                 $iteratedRUGrowthIncludingRedundancy = $iteratedRUGrowthIncludingRedundancy * $GrowthProjectionMultiplier
-                $requestUnitGrowthArrayIncludingRedundancy.Add("$iteratedRUGrowthIncludingRedundancy GB")
+                $requestUnitGrowthArrayIncludingRedundancy.Add("$iteratedRUGrowthIncludingRedundancy")
                 $iteratedRUGrowth = $iteratedRUGrowth * $GrowthProjectionMultiplier
-                $requestUnitGrowthArray.Add("$iteratedRUGrowth GB")
+                $requestUnitGrowthArray.Add("$iteratedRUGrowth")
             }
 
             if ($IsServerless -eq $false) {
@@ -181,7 +181,7 @@ $subscriptions | ForEach-Object {
                 LocationContext                     = $LocationDictionary
                 GrowthProjectionContext             = $GrowthProjectionContext
             }
-
+            # $CapacityExport = @{}
             $CapacityExport = [ordered] @{
                 SubscriptionId = $SubscriptionId
                 AccountName = $_.Name
@@ -204,7 +204,10 @@ $subscriptions | ForEach-Object {
 
             $CSVResult += New-Object PSObject -Property $CapacityExport
 
+            # $CSVResult | Export-Csv -Path ./CosmosDBRequestUnitContext.csv -NoTypeInformation
+
             $_.WriteLocations | ForEach-Object {
+                # $RegionExport = @{}
                 $RegionExport = @{
                     Region = $_.LocationName 
                 }
