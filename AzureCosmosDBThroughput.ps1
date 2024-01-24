@@ -2,15 +2,18 @@
 $EndTime = "2024-01-12T00:00:00Z"
 $TenantId = ""
 $ExcludeSouthCentralRegion = $false
+$GrowthProjectionMultiplier = 1.15
+$InScopeCSV = Import-Csv -Path ./inscopeCosmosTest.csv
 
 $Subscriptions = Get-AzSubscription -TenantId $TenantId
-
+$CSVResult = @()
 $TotalRequestUnits = 0
 $NumberOfDays = $null
 $RequestUnitDictionary = @{}
+$TotalPhysicalPartitionSizeContext = 0
 
 $subscriptions | ForEach-Object {
-
+    $SubscriptionId = $_.SubscriptionId
     $Context = Set-AzContext -SubscriptionId $_.SubscriptionId
 
     $ResourceGroupsInSubscription = Get-AzResourceGroup
@@ -19,11 +22,27 @@ $subscriptions | ForEach-Object {
 
         $CosmosDBAccounts = Get-AzCosmosDBAccount -ResourceGroupName $_.ResourceGroupName
         $ResourceGroupName = $_.ResourceGroupName
+        $LocationDictionary = @{}
         $CosmosDBAccounts | ForEach-Object {
+
+            $_.WriteLocations | ForEach-Object {
+                $LocationDictionary.Add($_.LocationName, @{ IsZoneRedundant = $_.IsZoneRedundant})
+            }
             
             if ($ExcludeSouthCentralRegion -eq $true -and $_.Location -eq "South Central US") {
                 Write-Output "Excluding Cosmos DB instance $($_.Name) in region $($_.Location)"
                 return
+            }
+
+            foreach($row in $InScopeCSV) {
+                if ($row.Name -eq $_.Name) {
+                    Write-Output "Including Cosmos DB instance $($_.Name) in region $($_.Location)"
+                    break
+                }
+                else {
+                    Write-Output "Excluding Cosmos DB instance $($_.Name) in region $($_.Location)"
+                    return
+                }
             }
 
             $TotalCosmosDBProvisionedThroughtput = 0
@@ -68,7 +87,7 @@ $subscriptions | ForEach-Object {
             $IndividualCosmosAccountRequestUnits = 0
             $PeakDailyRUConsumption = 0
             $PeakDailyRUDate = "No Date"
-
+            #5 minute time grain for peak daily request units
             $MetricData = Get-AzMetric -ResourceId $_.Id -MetricName TotalRequestUnits -TimeGrain 01:00:00:00 -StartTime $StartTime -EndTime $EndTime -AggregationType Total -WarningAction SilentlyContinue   
 
             $NumberOfDays = $MetricData.Data.Count
@@ -82,19 +101,76 @@ $subscriptions | ForEach-Object {
                 }
             }
 
-            $PhysicalParititionSize = Get-AzMetric -ResourceId $_.Id -MetricName PhysicalPartitionSizeInfo -TimeGrain 01:00:00:00 -StartTime $StartTime -EndTime $EndTime -AggregationType Max -WarningAction SilentlyContinue
+            $PhysicalParititionSize = Get-AzMetric -ResourceId $_.Id -MetricName DataUsage -TimeGrain 01:00:00 -StartTime $StartTime -EndTime $EndTime -AggregationType Max -WarningAction SilentlyContinue
             $TotalPhysicalPartitionSize = 0
             if ($PhysicalParititionSize.Data -ne $null) {
                 $TotalPhysicalPartitionSize = $PhysicalParititionSize.Data[$PhysicalParititionSize.Data.Count - 1].Maximum
             }
 
-            $FormattedPhysicalParitionSize = [math]::round($TotalPhysicalPartitionSize / 1Gb, 5)
+            $FormattedPhysicalParitionSize = [math]::round($TotalPhysicalPartitionSize / 1Gb, 8)
+            #$TotalPhysicalPartitionSizeContext += $FormattedPhysicalParitionSize
+
+            $NumberOfWriteRegionsIncludingZonalMultiplier = $_.WriteLocations.Count * 3
+            $GrowthProjectionContext = @{}
+            $GrowthProjectionContext.Add("NumberOfWriteRegions", $_.WriteLocations.Count)
+            $GrowthProjectionContext.Add("NumberOfWriteRegionsTimesZonalReplications", $_.WriteLocations.Count * 3)
+            $physicalParitionGrowthArray = [System.Collections.ArrayList]@()
+            $physicalParitionGrowthArrayIncludingRedundancy = [System.Collections.ArrayList]@()
+            $iteratedPartitionGrowthIncludingRedundancy = $FormattedPhysicalParitionSize * $NumberOfWriteRegionsIncludingZonalMultiplier
+            $physicalParitionGrowthArrayIncludingRedundancy.Add($iteratedPartitionGrowthIncludingRedundancy)
+            $iteratedPartitionGrowth = $FormattedPhysicalParitionSize
+            $physicalParitionGrowthArray.Add($iteratedPartitionGrowth)
+            for ($i = 0; $i -lt 12; $i++)
+            {
+                $iteratedPartitionGrowthIncludingRedundancy = $iteratedPartitionGrowthIncludingRedundancy * $GrowthProjectionMultiplier
+                $physicalParitionGrowthArrayIncludingRedundancy.Add($iteratedPartitionGrowthIncludingRedundancy)
+                $iteratedPartitionGrowth = $iteratedPartitionGrowth * $GrowthProjectionMultiplier
+                $physicalParitionGrowthArray.Add($iteratedPartitionGrowth)
+            }
+
+            $requestUnitGrowthArray = [System.Collections.ArrayList]@()
+            $requestUnitGrowthArrayIncludingRedundancy = [System.Collections.ArrayList]@()
+            $iteratedRUGrowthIncludingRedundancy = ($IndividualCosmosAccountRequestUnits / $NumberOfDays / 24 / 60 / 60) * $NumberOfWriteRegionsIncludingZonalMultiplier
+            $iteratedRUGrowth = $IndividualCosmosAccountRequestUnits / $NumberOfDays / 24 / 60 / 60
+            $requestUnitGrowthArrayIncludingRedundancy.Add("$iteratedRUGrowthIncludingRedundancy GB")
+            $requestUnitGrowthArray.Add("$iteratedRUGrowth GB")
+            for ($i = 0; $i -lt 12; $i++)
+            {
+                $iteratedRUGrowthIncludingRedundancy = $iteratedRUGrowthIncludingRedundancy * $GrowthProjectionMultiplier
+                $requestUnitGrowthArrayIncludingRedundancy.Add("$iteratedRUGrowthIncludingRedundancy GB")
+                $iteratedRUGrowth = $iteratedRUGrowth * $GrowthProjectionMultiplier
+                $requestUnitGrowthArray.Add("$iteratedRUGrowth GB")
+            }
+
+            if ($IsServerless -eq $false) {
+                $provisionedComputeGrowthArrayIncludingRedundancy = [System.Collections.ArrayList]@()
+                $iteratedProvisionedComputeGrowthIncludingRedundancy = $TotalCosmosDBProvisionedThroughtput * $NumberOfWriteRegionsIncludingZonalMultiplier
+                $provisionedComputeGrowthArray = [System.Collections.ArrayList]@()
+                $iteratedProvisionedComputeGrowth = $TotalCosmosDBProvisionedThroughtput
+                $provisionedComputeGrowthArrayIncludingRedundancy.Add($iteratedProvisionedComputeGrowthIncludingRedundancy)
+                $provisionedComputeGrowthArray.Add($iteratedProvisionedComputeGrowth)
+                for ($i = 0; $i -lt 12; $i++)
+                {
+                    $iteratedProvisionedComputeGrowthIncludingRedundancy = $iteratedProvisionedComputeGrowthIncludingRedundancy * $GrowthProjectionMultiplier
+                    $provisionedComputeGrowthArrayIncludingRedundancy.Add($iteratedProvisionedComputeGrowthIncludingRedundancy)
+                    $iteratedProvisionedComputeGrowth = $iteratedProvisionedComputeGrowth * $GrowthProjectionMultiplier
+                    $provisionedComputeGrowthArray.Add($iteratedProvisionedComputeGrowth)
+                }
+                $GrowthProjectionContext.Add("MonthlyProvisionedComputeGrowth", $provisionedComputeGrowthArray)
+                $GrowthProjectionContext.Add("MonthlyProvisionedComputeGrowthIncludingRedundancy", $provisionedComputeGrowthArrayIncludingRedundancy)
+            }
+            $GrowthProjectionContext.Add("MonthlyRequestUnitPerSecondGrowth", $requestUnitGrowthArray)
+            $GrowthProjectionContext.Add("MonthlyRequestUnitPerSecondGrowthIncludingRedundancy", $requestUnitGrowthArrayIncludingRedundancy)
+            
+            $GrowthProjectionContext.Add("MonthlyPhysicalPartitionGrowth", $physicalParitionGrowthArray)
+            $GrowthProjectionContext.Add("MonthlyPhysicalPartitionGrowthIncludingRedundancy", $physicalParitionGrowthArrayIncludingRedundancy)
+
 
             $IndividualCosmosAccountContext = @{
                 TotalRequestUnits                   = $IndividualCosmosAccountRequestUnits
                 # Total Request Units Per Seconds is the total request units consumed divided by the number of days, hours, minutes, and seconds in the time range.
                 TotalRequestUnitsPerSecond          = $IndividualCosmosAccountRequestUnits / $NumberOfDays / 24 / 60 / 60 
-                Region                              = $_.Location
+                PriaryRegion                        = $_.Location
                 PeakDailyRUConsumption              = $PeakDailyRUConsumption
                 # Peak Daily Request Units Per Seconds is the peak daily request units consumed divided by the number of hours, minutes, and seconds in a day.
                 PeakDailyRUPerSecondConsumption     = $PeakDailyRUConsumption / 24 / 60 / 60
@@ -102,7 +178,40 @@ $subscriptions | ForEach-Object {
                 TotalCosmosDBProvisionedThroughtput = $TotalCosmosDBProvisionedThroughtput
                 TotalPhysicalPartitionSize          = "$FormattedPhysicalParitionSize GB"
                 #TotalNumberOfPhysicalPartitions     = $TotalNumberOfPhysicalPartitions
+                LocationContext                     = $LocationDictionary
+                GrowthProjectionContext             = $GrowthProjectionContext
             }
+
+            $CapacityExport = [ordered] @{
+                SubscriptionId = $SubscriptionId
+                AccountName = $_.Name
+                Prod = "No"
+                "AZ Capacity" = "Y"
+                "Brief Description" = ""
+                Region = ""
+                "Serverless" = $IsServerless
+                "Current State - Storage" = $physicalParitionGrowthArray[0]
+                "Current State - RU" = If ($IsServerless -eq $true) {$requestUnitGrowthArray[0]} ELSE {$provisionedComputeGrowthArray[0]}
+                "Feb 2024 - Storage" = $physicalParitionGrowthArray[1]
+                "Feb 2024 - RU" = If ($IsServerless -eq $true) {$requestUnitGrowthArray[1]} ELSE {$provisionedComputeGrowthArray[1]}
+                "March 2024 - Storage" = $physicalParitionGrowthArray[2]
+                "March 2024 - RU" = If ($IsServerless -eq $true) {$requestUnitGrowthArray[2]} ELSE {$provisionedComputeGrowthArray[2]}
+                "April 2024 - Storage" = $physicalParitionGrowthArray[3]
+                "April 2024 - RU" = If ($IsServerless -eq $true) {$requestUnitGrowthArray[3]} ELSE {$provisionedComputeGrowthArray[3]}
+                "June 2024 - Storage" = $physicalParitionGrowthArray[4]
+                "June 2024 - RU" = If ($IsServerless -eq $true) {$requestUnitGrowthArray[4]} ELSE {$provisionedComputeGrowthArray[4]}
+            }
+
+            $CSVResult += New-Object PSObject -Property $CapacityExport
+
+            $_.WriteLocations | ForEach-Object {
+                $RegionExport = @{
+                    Region = $_.LocationName 
+                }
+
+                $CSVResult += New-Object PSObject -Property $RegionExport
+            }
+
 
             $RequestUnitDictionary.Add($_.Name, $IndividualCosmosAccountContext)
 
@@ -112,12 +221,14 @@ $subscriptions | ForEach-Object {
 }
 
 Write-Output "Total Requests units for all Cosmos DB instances from $StartTime to ${EndTime}: $TotalRequestUnits"
+Write-Output "Total physical partition size for all Cosmos DB instances from $StartTime to ${EndTime}: $TotalPhysicalPartitionSize"
 
 # Total Request Units Per Seconds is the total request units consumed divided by the number of days, hours, minutes, and seconds in the time range.
 # This value is for all CosmosDB instances in the subscription.
-$TotalRequestUnitsPerSecond = $TotalRequestUnits / 24 / 60 / 60
+$TotalRequestUnitsPerSecond = $TotalRequestUnits / $NumberOfDays / 24 / 60 / 60
 
 Write-Output "Total Requests units per second required for all Cosmos DB instances from $StartTime to ${EndTime}: $TotalRequestUnitsPerSecond"
 
 Write-Output "Request Unit context for the last $NumberOfDays days by Cosmos DB instance:"
-Write-Output $RequestUnitDictionary | ConvertTo-Json -Depth 4
+Write-Output $RequestUnitDictionary | ConvertTo-Json -Depth 6
+$CSVResult | Export-Csv -Path ./CosmosDBRequestUnitContext.csv -NoTypeInformation
