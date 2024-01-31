@@ -1,5 +1,5 @@
 ﻿#Variables
-$targetOrganization=""
+$targetOrganization="https://dev.azure.com/"
 $organizationName=""
 $targetPersonalAccessToken=""
 $targetPatUser = ""
@@ -43,12 +43,21 @@ foreach ($row in $CSVOrganizations)
             if (($_[0] | ConvertFrom-Json).typeName -eq "Microsoft.TeamFoundation.Core.WebApi.ProjectDoesNotExistWithNameException, Microsoft.TeamFoundation.Core.WebApi") 
             {
 
-                $sourceProcess = Invoke-WebRequest -Uri "https://dev.azure.com/$name/_apis/projects/$sourceProjectId/properties?keys=System.Process Template&api-version=7.0-preview.1"  -Method Get -ContentType "application/json" -Headers @{"Authorization"="Basic $b64EncodedPATSource"}
+                # $sourceProcess = Invoke-WebRequest -Uri "https://dev.azure.com/$name/_apis/projects/$sourceProjectId/properties?keys=System.CurrentProcessTemplateId&api-version=7.0-preview.1"  -Method Get -ContentType "application/json" -Headers @{"Authorization"="Basic $b64EncodedPATSource"}
+                $sourceProjectUri = "https://dev.azure.com/$name/_apis/projects/$sourceProjectId" + "?includeCapabilities=true&includeHistory=true&api-version=7.1-preview.4"
+                $sourceProject = Invoke-WebRequest -Uri $sourceProjectUri  -Method Get -ContentType "application/json" -Headers @{"Authorization"="Basic $b64EncodedPATSource"}
+                # $matchingSourceProject = @{}
+                # foreach ($project in ($sourceProjects.Content | ConvertFrom-Json).value) {
+                #     if ($project.name -eq $sourceProjectName) {
+                #         $matchingSourceProject = $project
+                #     }
+                # }
+                $listTargetProcesses = Invoke-WebRequest -Uri "https://dev.azure.com/$organizationName/_apis/process/processes?api-version=7.0" -Method Get -ContentType "application/json" -Headers @{"Authorization"="Basic $b64EncodedPATTarget"}
                 
-                $listTargetProcesses = Invoke-WebRequest -Uri "https://dev.azure.com/$organizationName/_apis/process/processes?api-version=7.0"  -Method Get -ContentType "application/json" -Headers @{"Authorization"="Basic $b64EncodedPATTarget"}
-
                 foreach ($process in ($listTargetProcesses.Content | ConvertFrom-Json).value) {
-                    $sourceProcessName = ($sourceProcess.Content | ConvertFrom-Json).value[0].value
+                    $sourceProcessName = ($sourceProject.Content | ConvertFrom-Json).capabilities.processTemplate.templateName
+                    # $sourceProcessName = Invoke-WebRequest -Uri https://dev.azure.com/$name/_apis/process/processes/"$sourceProcessId"?api-version=7.1-preview.1 -Method Get -ContentType "application/json" -Headers @{"Authorization"="Basic $b64EncodedPATSource"}
+                    #Write-Output ($sourceProcessName)
                     $migrationProcessName = $sourceProcessName + "Migration"
                     if ($migrationProcessName -eq $process.name) {
                        $templateId = $process.id
@@ -298,7 +307,7 @@ foreach ($row in $CSVOrganizations)
             
             if ($_.Name -eq "Source") {
                 $_.AccessToken = $sourcePersonalAccessToken
-                $_.Query.Parameters.TeamProject = $currentProject.name
+                $_.Query.Parameters.TeamProject = $sourceProjectName
                 $_.Organisation = "https://dev.azure.com/$name/"
                 $_.Project = $sourceProjectName
             }
@@ -315,7 +324,7 @@ foreach ($row in $CSVOrganizations)
          try {
              Write-Output "Executing Migration for $sourceProjectName"
              #C:\tools\MigrationTools\migration.exe execute --config ./configuration4.json | Out-File -FilePath ./output.txt -Append
-             C:\Users\quinnmeagher\Downloads\MigrationTools-13.0.3\migration.exe execute --config ./organizationMigrationConfiguration.json | Out-File -FilePath ./output.txt -Append
+             C:\Users\quinnmeagher\Downloads\MigrationTools-14.4.5\devopsmigration.exe execute --config ./organizationMigrationConfiguration.json | Out-File -FilePath ./output.txt -Append
          }
          catch {
              $Error[0].Message | Out-File -FilePath ./output.txt -Append
