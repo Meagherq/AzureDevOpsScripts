@@ -314,7 +314,7 @@ foreach ($row in $CSVOrganizations)
             if ($_.Name -eq "Target") {
                 $_.AccessToken = $targetPersonalAccessToken
                 $_.Organisation = "https://dev.azure.com/$organizationName/"
-                $_.Project = $currentProject.name
+                $_.Project = $sourceProjectName
             }
          }
 
@@ -324,8 +324,9 @@ foreach ($row in $CSVOrganizations)
          try {
              Write-Output "Executing Migration for $sourceProjectName"
              #C:\tools\MigrationTools\migration.exe execute --config ./configuration4.json | Out-File -FilePath ./output.txt -Append
-             C:\Users\quinnmeagher\Downloads\MigrationTools-14.4.5\devopsmigration.exe execute --config ./organizationMigrationConfiguration.json | Out-File -FilePath ./output.txt -Append
-         }
+             #C:\Users\quinnmeagher\Downloads\MigrationTools-15.0.0-Preview.324\devopsmigration.exe execute --config ./organizationMigrationConfiguration.json | Out-File -FilePath ./output.txt -Append
+             C:\Users\quinnmeagher\Downloads\MigrationTools-15.0.0-Preview.324\devopsmigration.exe execute --config ./organizationMigrationConfiguration.json
+            }
          catch {
              $Error[0].Message | Out-File -FilePath ./output.txt -Append
          }

@@ -76,17 +76,10 @@
       }
     },
     {
-      "$type": "FieldtoTagMapConfig",
-      "WorkItemTypeName": "*",
-      "sourceField": "System.State",
-      "formatExpression": "ScrumState:{0}"
-    },
-    {
       "$type": "FieldMergeMapConfig",
       "WorkItemTypeName": "*",
       "sourceFields": [
-        "System.Description",
-        "Microsoft.VSTS.Common.AcceptanceCriteria"
+        "System.Description"
       ],
       "targetField": "System.Description",
       "formatExpression": "{0} <br/><br/><h3>Acceptance Criteria</h3>{1}"
@@ -98,24 +91,11 @@
       "targetField": "COMPANY.DEVISION.MinorReleaseVersion",
       "pattern": "PRODUCT \\d{4}.(\\d{1})",
       "replacement": "$1"
-    },
-    {
-      "$type": "FieldValuetoTagMapConfig",
-      "WorkItemTypeName": "*",
-      "sourceField": "Microsoft.VSTS.CMMI.Blocked",
-      "pattern": "Yes",
-      "formatExpression": "{0}"
-    },
-    {
-      "$type": "TreeToTagMapConfig",
-      "WorkItemTypeName": "*",
-      "toSkip": 3,
-      "timeTravel": 1
     }
   ],
   "GitRepoMapping": null,
   "LogLevel": "Verbose",
-  "CommonEnrichersConfig": null,
+  "CommonEnrichersConfig": [],
   "Processors": [
     {
       "$type": "WorkItemMigrationConfig",
@@ -166,7 +146,7 @@
       "RepositoryNameMaps": {}
     }
   ],
-  "Version": "14.4",
+  "Version": "15.0",
   "workaroundForQuerySOAPBugEnabled": false,
   "WorkItemTypeDefinition": {
     "sourceWorkItemTypeName": "targetWorkItemTypeName"
@@ -176,6 +156,7 @@
       {
         "Name": "Source",
         "AccessToken": "",
+        "$type": "AzureDevOpsEndpointOptions",
         "Query": {
           "Query": "SELECT [System.Id], [System.Tags] FROM WorkItems WHERE [System.TeamProject] = @TeamProject AND [System.WorkItemType] NOT IN ('Test Suite', 'Test Plan') ORDER BY [System.ChangedDate] desc",
           "Parameters": {
@@ -194,12 +175,13 @@
       },
       {
         "Name": "Target",
+        "$type": "AzureDevOpsEndpointOptions",
         "AccessToken": "",
         "Query": {
           "Query": "SELECT [System.Id], [System.Tags] FROM WorkItems WHERE [System.TeamProject] = @TeamProject AND [System.WorkItemType] NOT IN ('Test Suite', 'Test Plan') ORDER BY [System.ChangedDate] desc"
         },
         "Organisation": "https://dev.azure.com//",
-        "Project": "Test2",
+        "Project": "MigrationSource",
         "ReflectedWorkItemIdField": "Custom.ReflectedWorkItemId",
         "AuthenticationMode": "AccessToken",
         "AllowCrossProjectLinking": false,
