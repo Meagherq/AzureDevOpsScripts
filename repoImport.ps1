@@ -4,6 +4,11 @@ $sourceProjectName= [uri]::EscapeDataString("")
 $targetOrgName=""
 $targetProjectName= [uri]::EscapeDataString("")
 
+$PATSource=""
+$PATSourceUser = ""
+
+$b64EncodedSourcePAT = [System.Convert]::ToBase64String([System.Text.Encoding]::UTF8.GetBytes($PATSourceUser + ":" + $PATSource))
+
 $PAT=""
 $PATUser = ""
 
@@ -13,7 +18,7 @@ $existingProject = Invoke-WebRequest -Uri https://dev.azure.com/$targetOrgName/_
 $existingProjectId = ($existingProject.Content | ConvertFrom-Json).id
 
 # Migrate Repos from Source
-$sourceRepos = Invoke-WebRequest -Uri https://dev.azure.com/$sourceOrgName/$sourceProjectName/_apis/git/repositories?api-version=7.1-preview.1  -Method Get -ContentType "application/json" -Headers @{"Authorization"="Basic $b64EncodedPAT"}
+$sourceRepos = Invoke-WebRequest -Uri https://dev.azure.com/$sourceOrgName/$sourceProjectName/_apis/git/repositories?api-version=7.1-preview.1  -Method Get -ContentType "application/json" -Headers @{"Authorization"="Basic $b64EncodedSourcePAT"}
 ($sourceRepos.Content | ConvertFrom-Json).value | ForEach-Object { 
     
     #Check if repo existing in target project
@@ -53,8 +58,8 @@ $sourceRepos = Invoke-WebRequest -Uri https://dev.azure.com/$sourceOrgName/$sour
                         "url"           = "https://$sourceOrgName@dev.azure.com/$sourceOrgName/$sourceProjectName/_git/$sourceRepositoryName"
                         "authorization" = @{
                             "parameters" = @{
-                                "username" = "$PATUser"
-                                "password" = "$PAT"
+                                "username" = "$PATSourceUser"
+                                "password" = "$PATSource"
                             }
                             "scheme"     = "UsernamePassword"
                         }
@@ -139,8 +144,8 @@ $sourceRepos = Invoke-WebRequest -Uri https://dev.azure.com/$sourceOrgName/$sour
                     "url"           = "https://$sourceOrgName@dev.azure.com/$sourceOrgName/$sourceProjectName/_git/$sourceRepositoryName"
                     "authorization" = @{
                         "parameters" = @{
-                            "username" = "$PATUser"
-                            "password" = "$PAT"
+                            "username" = "$PATSourceUser"
+                            "password" = "$PATSource"
                         }
                         "scheme"     = "UsernamePassword"
                     }
