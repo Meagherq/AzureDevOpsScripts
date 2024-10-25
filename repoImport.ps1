@@ -120,7 +120,7 @@ $sourceRepos = Invoke-WebRequest -Uri https://dev.azure.com/$sourceOrgName/$sour
         if (($_[0] | ConvertFrom-Json).typeName -eq "Microsoft.TeamFoundation.Git.Server.GitRepositoryNotFoundException, Microsoft.TeamFoundation.Git.Server") 
         {
             $newRepoParameters = @{
-                name        = $sourceRepositoryName
+                name         = [uri]::UnescapeDataString($sourceRepositoryName) 
             }
             $newRepo = Invoke-WebRequest -Uri "https://dev.azure.com/$targetOrgName/$targetProjectName/_apis/git/repositories?api-version=7.0" -Method Post -ContentType "application/json" -Body ($newRepoParameters | ConvertTo-Json) -Headers @{"Authorization"="Basic $b64EncodedPAT"}
             
